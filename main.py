@@ -32,9 +32,14 @@ def startup_db_check():
 
 
 # --- 2. CORS SETTINGS ---
+origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://my-frontend-steel-two.vercel.app" # Your exact Vercel URL
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=origins,  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
