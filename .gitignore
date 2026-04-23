@@ -1,0 +1,11 @@
+ # Ignore Python virtual environments and cache
+venv/
+__pycache__/
+.pytest_cache/
+
+# Ignore security secrets
+.env
+
+# Ignore your test videos
+*.mp4
+*.avi
