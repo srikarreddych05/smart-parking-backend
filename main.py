@@ -136,7 +136,6 @@ class BookingRequest(BaseModel):
     spot_id: str
     user_id: int
     start_time: str
-    end_time: str
     plate: Optional[str] = None
 
 class EndBookingRequest(BaseModel):
@@ -359,21 +358,18 @@ def reserve_spot(req: BookingRequest, bg_tasks: BackgroundTasks):
         user_name = user["name"] if user else "Unknown"
         active_plate = req.plate or (user["plate"] if user else "SYS-TEMP")
 
-        # --- THE FIX: Convert "14:30" into "2026-04-25 14:30:00" ---
         today = datetime.now().strftime("%Y-%m-%d")
         full_start_time = f"{today} {req.start_time}:00"
-        full_end_time = f"{today} {req.end_time}:00"
 
-        # Notice we use full_start_time and full_end_time here!
+        # Notice we removed end_time from the INSERT completely. It will default to NULL in the DB.
         cursor.execute(
-            "INSERT INTO bookings (spot_id, user_id, start_time, end_time, plate, status) VALUES (%s, %s, %s, %s, %s, 'Active') RETURNING *",
-            (req.spot_id, req.user_id, full_start_time, full_end_time, active_plate)
+            "INSERT INTO bookings (spot_id, user_id, start_time, plate, status) VALUES (%s, %s, %s, %s, 'Active') RETURNING *",
+            (req.spot_id, req.user_id, full_start_time, active_plate)
         )
         
         cursor.execute("UPDATE spots SET status = 'occupied', plate = %s WHERE id = %s", (active_plate, req.spot_id))
         conn.commit()
 
-        # Trigger WebSockets
         bg_tasks.add_task(manager.broadcast, {
             "type": "SPOT_UPDATE",
             "spot_id": req.spot_id,
@@ -384,8 +380,8 @@ def reserve_spot(req: BookingRequest, bg_tasks: BackgroundTasks):
             "id": req.spot_id,
             "plate": active_plate,
             "userName": user_name,
-            "startTime": req.start_time, # Keep UI clean with just "14:30"
-            "endTime": req.end_time,
+            "startTime": req.start_time, 
+            "endTime": "Active", # Dashboard will show "Active" while they are parked
             "status": "Active"
         }
         bg_tasks.add_task(manager.broadcast, {"type": "NEW_BOOKING_LOG", "log": new_log})
@@ -394,21 +390,21 @@ def reserve_spot(req: BookingRequest, bg_tasks: BackgroundTasks):
         
     except Exception as e:
         conn.rollback()
-        # Adding a print statement here so if it crashes again, it prints to Render!
         print(f"CRITICAL BOOKING ERROR: {e}") 
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
         conn.close()
-        
+                
 @app.post("/api/bookings/end")
 def end_booking(req: EndBookingRequest, bg_tasks: BackgroundTasks):
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     
     try:
+        # THE FIX: We added `end_time = NOW()` to this update query!
         cursor.execute(
-            "UPDATE bookings SET status = 'Completed' WHERE spot_id = %s AND user_id = %s AND status = 'Active'",
+            "UPDATE bookings SET status = 'Completed', end_time = NOW() WHERE spot_id = %s AND user_id = %s AND status = 'Active'",
             (req.spot_id, req.user_id)
         )
         cursor.execute(
@@ -424,6 +420,9 @@ def end_booking(req: EndBookingRequest, bg_tasks: BackgroundTasks):
         })
 
         return {"message": "Booking ended successfully"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
         conn.close()
