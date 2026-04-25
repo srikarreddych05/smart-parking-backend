@@ -5,7 +5,7 @@ from ultralytics import YOLO
 from shapely.geometry import Polygon, Point
 
 # --- 1. CONFIGURATION ---
-API_URL = "http://127.0.0.1:8080/api/cv/bulk_update"
+API_URL = "https://smart-parking-backend-1cvq.onrender.com/api/cv/bulk_update"
 VIDEO_SOURCE = 0
 
 PARKING_ZONES = {

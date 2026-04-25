@@ -6,6 +6,11 @@ import psycopg2
 import os
 from psycopg2.extras import RealDictCursor
 from passlib.context import CryptContext
+import smtplib
+import random
+from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = FastAPI()
 
@@ -35,7 +40,7 @@ def startup_db_check():
 origins = [
     "http://localhost:5173",
     "http://localhost:3000",
-    "https://my-frontend-steel-two.vercel.app" # Your exact Vercel URL
+    "https://my-frontend-steel-two.vercel.app" 
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -76,11 +81,14 @@ class LoginCredentials(BaseModel):
     email: str
     password: str
 
+class OTPRequest(BaseModel):
+    email: str
+
 class RegisterData(BaseModel):
     name: str
     email: str
     password: str
-    role: str
+    otp: str  
     carNumber: Optional[str] = ""
     employeeId: Optional[str] = ""
 
