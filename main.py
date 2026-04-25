@@ -359,15 +359,21 @@ def reserve_spot(req: BookingRequest, bg_tasks: BackgroundTasks):
         user_name = user["name"] if user else "Unknown"
         active_plate = req.plate or (user["plate"] if user else "SYS-TEMP")
 
+        # --- THE FIX: Convert "14:30" into "2026-04-25 14:30:00" ---
+        today = datetime.now().strftime("%Y-%m-%d")
+        full_start_time = f"{today} {req.start_time}:00"
+        full_end_time = f"{today} {req.end_time}:00"
+
+        # Notice we use full_start_time and full_end_time here!
         cursor.execute(
             "INSERT INTO bookings (spot_id, user_id, start_time, end_time, plate, status) VALUES (%s, %s, %s, %s, %s, 'Active') RETURNING *",
-            (req.spot_id, req.user_id, req.start_time, req.end_time, active_plate)
+            (req.spot_id, req.user_id, full_start_time, full_end_time, active_plate)
         )
         
         cursor.execute("UPDATE spots SET status = 'occupied', plate = %s WHERE id = %s", (active_plate, req.spot_id))
         conn.commit()
 
-        # Trigger WebSockets safely in the background
+        # Trigger WebSockets
         bg_tasks.add_task(manager.broadcast, {
             "type": "SPOT_UPDATE",
             "spot_id": req.spot_id,
@@ -378,20 +384,23 @@ def reserve_spot(req: BookingRequest, bg_tasks: BackgroundTasks):
             "id": req.spot_id,
             "plate": active_plate,
             "userName": user_name,
-            "startTime": req.start_time,
+            "startTime": req.start_time, # Keep UI clean with just "14:30"
             "endTime": req.end_time,
             "status": "Active"
         }
         bg_tasks.add_task(manager.broadcast, {"type": "NEW_BOOKING_LOG", "log": new_log})
 
         return {"message": "Booking confirmed", "booking": new_log}
+        
     except Exception as e:
         conn.rollback()
+        # Adding a print statement here so if it crashes again, it prints to Render!
+        print(f"CRITICAL BOOKING ERROR: {e}") 
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
         conn.close()
-
+        
 @app.post("/api/bookings/end")
 def end_booking(req: EndBookingRequest, bg_tasks: BackgroundTasks):
     conn = get_db_connection()
