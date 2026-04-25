@@ -23,19 +23,59 @@ def get_db_connection():
     db_url = os.environ.get("DATABASE_URL", "postgresql://postgres:YOUR_ACTUAL_PASSWORD_HERE@127.0.0.1:5432/smart_parking")
     return psycopg2.connect(db_url)
 
-# --- STARTUP CHECKER (Finds errors instantly!) ---
+# --- AUTO CLEANUP TASK ---
+def check_expired_bookings():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Find active bookings that have passed their end_time
+        cursor.execute("""
+            UPDATE bookings 
+            SET status = 'Completed' 
+            WHERE status = 'Active' AND end_time <= NOW()
+            RETURNING spot_id
+        """)
+        expired_spots = cursor.fetchall()
+        
+        # Free up the parking spots for those expired bookings
+        for spot in expired_spots:
+            cursor.execute("""
+                UPDATE spots 
+                SET status = 'free', plate = NULL, is_overstay = false 
+                WHERE id = %s AND status = 'occupied'
+            """, (spot[0],))
+            
+            # Note: The websocket broadcast will happen on the next frontend refresh, 
+            # or we can add an async broadcast here later!
+        
+        conn.commit()
+        if expired_spots:
+            print(f"Cleaned up {len(expired_spots)} expired bookings.")
+    except Exception as e:
+        conn.rollback()
+        print(f"Scheduler Error: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+# --- STARTUP CHECKER & SCHEDULER ---
 @app.on_event("startup")
 def startup_db_check():
     try:
         conn = get_db_connection()
         conn.close()
         print("\n✅ SUCCESS: DATABASE CONNECTED PERFECTLY!\n")
+        
+        # Start the alarm clock
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(check_expired_bookings, 'interval', minutes=1)
+        scheduler.start()
+        print("✅ SUCCESS: AUTO-EXPIRY SCHEDULER STARTED!\n")
+        
     except Exception as e:
         print("\n❌ CRITICAL ERROR: DATABASE CONNECTION FAILED!")
         print(f"❌ Details: {e}")
-        print("❌ Did you forget your password, or forget to create the 'smart_parking' DB in pgAdmin?\n")
-
-
+        
 # --- 2. CORS SETTINGS ---
 origins = [
     "http://localhost:5173",
@@ -115,33 +155,94 @@ class EmergencyRequest(BaseModel):
     active: bool
 
 # --- 5. AUTHENTICATION ENDPOINTS ---
+
+@app.post("/api/send-otp")
+def send_otp(req: OTPRequest):
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    try:
+        # 1. Check if email exists
+        cursor.execute("SELECT id FROM users WHERE email = %s", (req.email.lower(),))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # 2. Generate OTP
+        otp_code = str(random.randint(100000, 999999))
+        expiry = datetime.now() + timedelta(minutes=10)
+        
+        # 3. Save to database (Upsert)
+        cursor.execute("""
+            INSERT INTO otp_codes (email, otp, expires_at) 
+            VALUES (%s, %s, %s)
+            ON CONFLICT (email) DO UPDATE SET otp = EXCLUDED.otp, expires_at = EXCLUDED.expires_at
+        """, (req.email.lower(), otp_code, expiry))
+        conn.commit()
+        
+        # 4. Send Email
+        sender_email = "srikarreddy701@gmail.com" 
+        sender_password = os.environ.get("EMAIL_APP_PASSWORD") 
+
+        if not sender_password:
+            raise HTTPException(status_code=500, detail="Server email configuration is missing")
+
+        msg = MIMEText(f"Your Nexus Parking verification code is: {otp_code}. It expires in 10 minutes.")
+        msg['Subject'] = 'Registration Verification Code'
+        msg['From'] = sender_email
+        msg['To'] = req.email.lower()
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+            
+        return {"message": "OTP sent successfully!"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
 @app.post("/api/register")
 def register(data: RegisterData):
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     
     try:
-        # FIX: Truncate the password to 72 characters max
+        # 1. Verify OTP
+        cursor.execute("SELECT otp, expires_at FROM otp_codes WHERE email = %s", (data.email.lower(),))
+        otp_record = cursor.fetchone()
+        
+        if not otp_record:
+            raise HTTPException(status_code=400, detail="Please request an OTP first")
+        if otp_record['otp'] != data.otp:
+            raise HTTPException(status_code=400, detail="Invalid OTP")
+        if otp_record['expires_at'] < datetime.now():
+            raise HTTPException(status_code=400, detail="OTP has expired")
+
+        # 2. Hash Password
         safe_password = data.password[:72]
         hashed_password = pwd_context.hash(safe_password)
         
-        plate = data.carNumber.upper() if data.role == "driver" else ""
-      
+        # 3. FORCE ROLE TO DRIVER
+        role = "driver"
+        plate = data.carNumber.upper()
         
         cursor.execute(
             """
             INSERT INTO users (name, email, password_hash, role, plate, employee_id, balance) 
             VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id, name, email, role, plate, balance
             """,
-            (data.name, data.email.lower(), hashed_password, data.role, plate, data.employeeId, 50.00)
+            (data.name, data.email.lower(), hashed_password, role, plate, data.employeeId, 50.00)
         )
         new_user = cursor.fetchone()
+        
+        # 4. Delete used OTP
+        cursor.execute("DELETE FROM otp_codes WHERE email = %s", (data.email.lower(),))
         conn.commit()
+        
         return {"user": new_user, "message": "Registration successful"}
         
-    except psycopg2.errors.UniqueViolation:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail="Email is already registered")
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
