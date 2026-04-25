@@ -426,6 +426,49 @@ def end_booking(req: EndBookingRequest, bg_tasks: BackgroundTasks):
     finally:
         cursor.close()
         conn.close()
+        
+@app.get("/api/bookings/user/{user_id}")
+def get_user_bookings(user_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        # Fetch all bookings for this user, newest first
+        cursor.execute("""
+            SELECT spot_id, start_time, end_time, plate, status 
+            FROM bookings 
+            WHERE user_id = %s 
+            ORDER BY start_time DESC
+        """, (user_id,))
+        bookings = cursor.fetchall()
+        
+        history = []
+        active_booking = None
+        
+        for b in bookings:
+            # Format the PostgreSQL Timestamps into clean strings for React
+            booking_obj = {
+                "id": b['spot_id'],
+                "plate": b['plate'],
+                "date": b['start_time'].strftime("%Y-%m-%d") if b['start_time'] else "",
+                "startTime": b['start_time'].strftime("%H:%M") if b['start_time'] else "",
+                "endTime": b['end_time'].strftime("%H:%M") if b['end_time'] else None,
+                "status": b['status']
+            }
+            
+            # Separate active bookings from finished history
+            if b['status'] == 'Active':
+                booking_obj['endTime'] = 'Active'
+                active_booking = booking_obj
+            else:
+                history.append(booking_obj)
+                
+        return {"activeBooking": active_booking, "history": history}
+    except Exception as e:
+        print(f"History Fetch Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()        
 
 # --- 7. ADMIN ENDPOINTS ---
 @app.post("/api/admin/spots/{spot_id}")
