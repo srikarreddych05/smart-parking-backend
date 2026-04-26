@@ -361,7 +361,7 @@ def reserve_spot(req: BookingRequest, bg_tasks: BackgroundTasks):
         today = datetime.now().strftime("%Y-%m-%d")
         full_start_time = f"{today} {req.start_time}:00"
 
-        # Notice we removed end_time from the INSERT completely. It will default to NULL in the DB.
+
         cursor.execute(
             "INSERT INTO bookings (spot_id, user_id, start_time, plate, status) VALUES (%s, %s, %s, %s, 'Active') RETURNING *",
             (req.spot_id, req.user_id, full_start_time, active_plate)
@@ -381,7 +381,7 @@ def reserve_spot(req: BookingRequest, bg_tasks: BackgroundTasks):
             "plate": active_plate,
             "userName": user_name,
             "startTime": req.start_time, 
-            "endTime": "Active", # Dashboard will show "Active" while they are parked
+            "endTime": "Active", 
             "status": "Active"
         }
         bg_tasks.add_task(manager.broadcast, {"type": "NEW_BOOKING_LOG", "log": new_log})
